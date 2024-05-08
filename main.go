@@ -1,34 +1,51 @@
 package main
 
 import (
+	"io"
 	"log"
+	"net/http"
 	"os"
-	"time"
+	"sync"
 
 	"github.com/gliderlabs/ssh"
 	"github.com/teris-io/shortid"
 	gossh "golang.org/x/crypto/ssh"
 )
 
-func main() {
+var clients sync.Map
+
+type HTTPHandler struct {
+}
+
+func (h *HTTPHandler) handleWebhook(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	ch, ok := clients.Load(id)
+	if !ok {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte("client id not found"))
+		return
+	}
+	b, err := io.ReadAll(r.Body)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer r.Body.Close()
+	ch.(chan string) <- string(b)
+}
+
+func startHTTPServer() error {
+	httpPort := ":5000"
+	router := http.NewServeMux()
+
+	handler := &HTTPHandler{}
+	router.HandleFunc("/{id}/", handler.handleWebhook)
+	return http.ListenAndServe(httpPort, router)
+}
+
+func startSSHServer() error {
 	sshPort := ":2222"
 
-	respCh := make(chan string)
-	go func() {
-		time.Sleep(time.Second * 3)
-		id, _ := shortid.Generate()
-		respCh <- "http://webhooker.com/" + id
-
-		time.Sleep(time.Second * 5)
-		for {
-			time.Sleep(time.Second * 2)
-			respCh <- "recieved data from hook"
-		}
-	}()
-
-	handler := &SSHHandler{
-		respCh: respCh,
-	}
+	handler := &SSHHandler{}
 	server := ssh.Server{
 		Addr:    sshPort,
 		Handler: handler.handleSSHSession,
@@ -53,20 +70,26 @@ func main() {
 	}
 	server.AddHostKey(privateKey)
 	log.Fatal(server.ListenAndServe())
+	return server.ListenAndServe()
+}
 
+func main() {
+	go startSSHServer()
+	startHTTPServer()
 }
 
 type SSHHandler struct {
-	respCh chan string
 }
 
 func (h *SSHHandler) handleSSHSession(session ssh.Session) {
-	forwardURL := session.RawCommand()
-	_ = forwardURL
-	resp := <-h.respCh
-	session.Write([]byte(resp + "\n"))
+	id := shortid.MustGenerate()
+	webhookURL := "http://webhooker.com/" + id
+	session.Write([]byte(webhookURL))
 
-	for data := range h.respCh {
+	respCh := make(chan string)
+	clients.Store(id, respCh)
+
+	for data := range respCh {
 		session.Write([]byte(data + "\n"))
 	}
 }
