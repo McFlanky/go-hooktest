@@ -39,13 +39,12 @@ func startHTTPServer() error {
 	router := http.NewServeMux()
 
 	handler := &HTTPHandler{}
-	router.HandleFunc("/{id}/", handler.handleWebhook)
+	router.HandleFunc("/{id}/*", handler.handleWebhook)
 	return http.ListenAndServe(httpPort, router)
 }
 
 func startSSHServer() error {
 	sshPort := ":2222"
-
 	handler := NewSSHHandler()
 	server := ssh.Server{
 		Addr:    sshPort,
@@ -70,7 +69,6 @@ func startSSHServer() error {
 		log.Fatal("Failed to parse private key: ", err)
 	}
 	server.AddHostKey(privateKey)
-	log.Fatal(server.ListenAndServe())
 	return server.ListenAndServe()
 }
 
@@ -95,8 +93,10 @@ func (h *SSHHandler) handleSSHSession(session ssh.Session) {
 		id := shortid.MustGenerate()
 		fmt.Println("new init id channel", id)
 		webhookURL := "http://localhost:5000/" + id + "\n"
-		session.Write([]byte(webhookURL))
-		respCh := make(chan string)
+		resp := fmt.Sprintf("webhook url %s\nssh localhost -p 2222 -i /home/coletj/workspace/github.com/McFlanky/ssh-webhook-app/keys/privatekey.pub %s | curl -X POST -d @- http://localhost:3000/payment/webhook \n", webhookURL, id)
+		//resp := fmt.Sprintf(`%s ssh localhost -p 2222 -i /home/coletj/workspace/github.com/McFlanky/ssh-webhook-app/keys/privatekey.pub %s | while IFS=read -r line; do echo "$line" | curl -X POST -d @- http://localhost:3000/payment/webhook; done`, webhookURL, id)
+		session.Write([]byte(resp))
+		respCh := make(chan string, 1)
 		h.channels[id] = respCh
 		clients.Store(id, respCh)
 	}
