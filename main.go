@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -45,7 +46,7 @@ func startHTTPServer() error {
 func startSSHServer() error {
 	sshPort := ":2222"
 
-	handler := &SSHHandler{}
+	handler := NewSSHHandler()
 	server := ssh.Server{
 		Addr:    sshPort,
 		Handler: handler.handleSSHSession,
@@ -79,17 +80,34 @@ func main() {
 }
 
 type SSHHandler struct {
+	channels map[string]chan string
+}
+
+func NewSSHHandler() *SSHHandler {
+	return &SSHHandler{
+		channels: make(map[string]chan string),
+	}
 }
 
 func (h *SSHHandler) handleSSHSession(session ssh.Session) {
-	id := shortid.MustGenerate()
-	webhookURL := "http://webhooker.com/" + id
-	session.Write([]byte(webhookURL))
-
-	respCh := make(chan string)
-	clients.Store(id, respCh)
-
-	for data := range respCh {
-		session.Write([]byte(data + "\n"))
+	cmd := session.RawCommand()
+	if cmd == "init" {
+		id := shortid.MustGenerate()
+		fmt.Println("new init id channel", id)
+		webhookURL := "http://localhost:5000/" + id + "\n"
+		session.Write([]byte(webhookURL))
+		respCh := make(chan string)
+		h.channels[id] = respCh
+		clients.Store(id, respCh)
+	}
+	if len(cmd) > 0 && cmd != "init" {
+		respCh, ok := h.channels[cmd]
+		if !ok {
+			session.Write([]byte("invalid webhook id\n"))
+			return
+		}
+		for data := range respCh {
+			session.Write([]byte(data + "\n"))
+		}
 	}
 }
