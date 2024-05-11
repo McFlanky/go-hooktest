@@ -2,8 +2,10 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -18,8 +20,8 @@ import (
 )
 
 type Session struct {
-	session ssh.Session
-	port    int
+	session     ssh.Session
+	destination string
 }
 
 var clients sync.Map
@@ -35,14 +37,19 @@ func (h *HTTPHandler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("client id not found"))
 		return
 	}
-	fmt.Println("this is the id", id)
 	session := value.(Session)
-	dest := fmt.Sprintf("http://localhost:%d", session.port)
-	_, err := http.Post(dest, "application/json", r.Body)
+	req, err := http.NewRequest(r.Method, session.destination, r.Body)
 	if err != nil {
 		log.Fatal(err)
 	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer resp.Body.Close()
 	defer r.Body.Close()
+	io.Copy(w, resp.Body)
+
 }
 
 func startHTTPServer() error {
@@ -50,6 +57,7 @@ func startHTTPServer() error {
 	router := http.NewServeMux()
 
 	handler := &HTTPHandler{}
+	router.HandleFunc("/{id}", handler.handleWebhook)
 	router.HandleFunc("/{id}/*", handler.handleWebhook)
 	return http.ListenAndServe(httpPort, router)
 }
@@ -136,14 +144,20 @@ func (h *SSHHandler) handleSSHSession(session ssh.Session) {
 
 		generatedPort := randomPort()
 		id := shortid.MustGenerate()
+		destination, err := url.Parse(input)
+		if err != nil {
+			log.Fatal(err)
+		}
+		host := destination.Host
+		// path := destination.Path
 		internalSession := Session{
-			session: session,
-			port:    generatedPort,
+			session:     session,
+			destination: destination.String(),
 		}
 		clients.Store(id, internalSession)
 
 		webhookURL := fmt.Sprintf("http://localhost:5000/%s", id)
-		command := fmt.Sprintf("\nGenerated Webhook: %s\n\nCopy & Run Command:\nssh -R 127.0.0.1:%d:%s localhost -p 2222 tunnel\n", webhookURL, generatedPort, input)
+		command := fmt.Sprintf("\nGenerated Webhook: %s\n\nCopy & Run Command:\nssh -R 127.0.0.1:%d:%s localhost -p 2222 tunnel\n\n", webhookURL, generatedPort, host)
 		term.Write([]byte(command))
 		return
 	}
