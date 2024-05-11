@@ -2,16 +2,25 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/gliderlabs/ssh"
 	"github.com/teris-io/shortid"
 	gossh "golang.org/x/crypto/ssh"
+	"golang.org/x/term"
+
+	"math/rand"
 )
+
+type Session struct {
+	session ssh.Session
+	port    int
+}
 
 var clients sync.Map
 
@@ -20,18 +29,20 @@ type HTTPHandler struct {
 
 func (h *HTTPHandler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	ch, ok := clients.Load(id)
+	value, ok := clients.Load(id)
 	if !ok {
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte("client id not found"))
 		return
 	}
-	b, err := io.ReadAll(r.Body)
+	fmt.Println("this is the id", id)
+	session := value.(Session)
+	dest := fmt.Sprintf("http://localhost:%d", session.port)
+	_, err := http.Post(dest, "application/json", r.Body)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer r.Body.Close()
-	ch.(chan string) <- string(b)
 }
 
 func startHTTPServer() error {
@@ -46,6 +57,8 @@ func startHTTPServer() error {
 func startSSHServer() error {
 	sshPort := ":2222"
 	handler := NewSSHHandler()
+
+	fwHandler := &ssh.ForwardedTCPHandler{}
 	server := ssh.Server{
 		Addr:    sshPort,
 		Handler: handler.handleSSHSession,
@@ -58,6 +71,20 @@ func startSSHServer() error {
 		},
 		PublicKeyHandler: func(ctx ssh.Context, key ssh.PublicKey) bool {
 			return true
+		},
+		LocalPortForwardingCallback: ssh.LocalPortForwardingCallback(func(ctx ssh.Context, dhost string, dport uint32) bool {
+			log.Println("Accepted forward", dhost, dport)
+			// todo: auth validation
+			return true
+		}),
+		ReversePortForwardingCallback: ssh.ReversePortForwardingCallback(func(ctx ssh.Context, host string, port uint32) bool {
+			log.Println("attempt to bind", host, port, "granted")
+			// todo: auth validation
+			return true
+		}),
+		RequestHandlers: map[string]ssh.RequestHandler{
+			"tcpip-forward":        fwHandler.HandleSSHRequest,
+			"cancel-tcpip-forward": fwHandler.HandleSSHRequest,
 		},
 	}
 	b, err := os.ReadFile("keys/privatekey.pub")
@@ -78,36 +105,61 @@ func main() {
 }
 
 type SSHHandler struct {
-	channels map[string]chan string
 }
 
 func NewSSHHandler() *SSHHandler {
-	return &SSHHandler{
-		channels: make(map[string]chan string),
-	}
+	return &SSHHandler{}
+
 }
 
 func (h *SSHHandler) handleSSHSession(session ssh.Session) {
-	cmd := session.RawCommand()
-	if cmd == "init" {
-		id := shortid.MustGenerate()
-		fmt.Println("new init id channel", id)
-		webhookURL := "http://localhost:5000/" + id + "\n"
-		resp := fmt.Sprintf("webhook url %s\nssh localhost -p 2222 -i /home/coletj/workspace/github.com/McFlanky/ssh-webhook-app/keys/privatekey.pub %s | curl -X POST -d @- http://localhost:3000/payment/webhook \n", webhookURL, id)
-		//resp := fmt.Sprintf(`%s ssh localhost -p 2222 -i /home/coletj/workspace/github.com/McFlanky/ssh-webhook-app/keys/privatekey.pub %s | while IFS=read -r line; do echo "$line" | curl -X POST -d @- http://localhost:3000/payment/webhook; done`, webhookURL, id)
-		session.Write([]byte(resp))
-		respCh := make(chan string, 1)
-		h.channels[id] = respCh
-		clients.Store(id, respCh)
+	if session.RawCommand() == "tunnel" {
+		session.Write([]byte("Tunneling traffic...\n"))
+		<-session.Context().Done()
+		return
 	}
-	if len(cmd) > 0 && cmd != "init" {
-		respCh, ok := h.channels[cmd]
-		if !ok {
-			session.Write([]byte("invalid webhook id\n"))
-			return
+
+	term := term.NewTerminal(session, "$ ")
+	msg := fmt.Sprintf("%s\n\nWelcome to HookTest!\n\nEnter your Webhook destination:\n", banner)
+	term.Write([]byte(msg))
+	for {
+		input, err := term.ReadLine()
+		if err != nil {
+			log.Fatal(err)
 		}
-		for data := range respCh {
-			session.Write([]byte(data + "\n"))
+
+		if strings.Contains(input, "ssh -R") {
+			for {
+				time.Sleep(time.Second)
+			}
 		}
+
+		generatedPort := randomPort()
+		id := shortid.MustGenerate()
+		internalSession := Session{
+			session: session,
+			port:    generatedPort,
+		}
+		clients.Store(id, internalSession)
+
+		webhookURL := fmt.Sprintf("http://localhost:5000/%s", id)
+		command := fmt.Sprintf("\nGenerated Webhook: %s\n\nCopy & Run Command:\nssh -R 127.0.0.1:%d:%s localhost -p 2222 tunnel\n", webhookURL, generatedPort, input)
+		term.Write([]byte(command))
+		return
 	}
 }
+
+func randomPort() int {
+	min := 49152
+	max := 65535
+	return min + rand.Intn(max-min+1)
+}
+
+var banner = `
+██╗  ██╗ ██████╗  ██████╗ ██╗  ██╗████████╗███████╗███████╗████████╗
+██║  ██║██╔═══██╗██╔═══██╗██║ ██╔╝╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝
+███████║██║   ██║██║   ██║█████╔╝    ██║   █████╗  ███████╗   ██║   
+██╔══██║██║   ██║██║   ██║██╔═██╗    ██║   ██╔══╝  ╚════██║   ██║   
+██║  ██║╚██████╔╝╚██████╔╝██║  ██╗   ██║   ███████╗███████║   ██║
+╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚══════╝   ╚═╝                                                               
+`
