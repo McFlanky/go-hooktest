@@ -128,8 +128,7 @@ func (h *SSHHandler) handleSSHSession(session ssh.Session) {
 	}
 
 	term := term.NewTerminal(session, "$ ")
-	msg := fmt.Sprintf("%s\n\nWelcome to HookTest!\n\nEnter your Webhook destination:\n", banner)
-	term.Write([]byte(msg))
+	term.Write([]byte(startMessage()))
 	for {
 		input, err := term.ReadLine()
 		if err != nil {
@@ -169,11 +168,24 @@ func randomPort() int {
 	return min + rand.Intn(max-min+1)
 }
 
-var banner = `
-██╗  ██╗ ██████╗  ██████╗ ██╗  ██╗████████╗███████╗███████╗████████╗
-██║  ██║██╔═══██╗██╔═══██╗██║ ██╔╝╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝
-███████║██║   ██║██║   ██║█████╔╝    ██║   █████╗  ███████╗   ██║   
-██╔══██║██║   ██║██║   ██║██╔═██╗    ██║   ██╔══╝  ╚════██║   ██║   
-██║  ██║╚██████╔╝╚██████╔╝██║  ██╗   ██║   ███████╗███████║   ██║
-╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚══════╝   ╚═╝                                                               
+func startMessage() string {
+	return `
+
+
+	██╗  ██╗ ██████╗  ██████╗ ██╗  ██╗████████╗███████╗███████╗████████╗
+	██║  ██║██╔═══██╗██╔═══██╗██║ ██╔╝╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝
+	███████║██║   ██║██║   ██║█████╔╝    ██║   █████╗  ███████╗   ██║   
+	██╔══██║██║   ██║██║   ██║██╔═██╗    ██║   ██╔══╝  ╚════██║   ██║   
+	██║  ██║╚██████╔╝╚██████╔╝██║  ██╗   ██║   ███████╗███████║   ██║
+	╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚══════╝   ╚═╝         
+	
+	
+
+Commands:
+   setup    - Setup a new webhook
+   tunnel   - Get tunnel config for existing webhook
+   list     - List all webhooks
+   active   - List all active ssh tunnels
+   help	    - Show this message
 `
+}
